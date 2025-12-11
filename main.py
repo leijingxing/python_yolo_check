@@ -151,11 +151,85 @@ while True:
         last_pose_results = results_pose
         results_emotion = last_emotion_results
 
-    # --- 绘制基础画面 ---
+    # --- 绘制逻辑 ---
+    
+    # 始终在当前帧的副本上进行绘制
+    annotated_frame = frame.copy()
+
+    # 1. 绘制表情 (手动绘制，性能最高且无闪烁)
     if last_emotion_results:
-        annotated_frame = last_emotion_results[0].plot()
-    else:
-        annotated_frame = frame.copy()
+        for r in last_emotion_results:
+            if hasattr(r, 'boxes') and r.boxes:
+                for box in r.boxes:
+                    # 获取坐标 (x1, y1, x2, y2)
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                    
+                    # 获取类别和置信度
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    
+                    # 获取表情名称
+                    emotion_en = model_emotion.names[cls_id]
+                    emotion_zh = emotion_map_zh.get(emotion_en, emotion_en)
+                    
+                    # 绘制矩形框 (颜色: 橙色 (0, 165, 255) in BGR is (255, 165, 0))
+                    # 这里用 BGR: (0, 140, 255)
+                    color = (0, 140, 255) 
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                    
+                    # 绘制标签背景和文字
+                    label = f"{emotion_en} {conf:.2f}"
+                    # 计算文字大小
+                    (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                    # 画文字背景框
+                    cv2.rectangle(annotated_frame, (x1, y1 - 25), (x1 + w, y1), color, -1)
+                    # 画文字 (白色)
+                    cv2.putText(annotated_frame, label, (x1, y1 - 6), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+    # 2. 绘制姿态 (手动叠加到 annotated_frame 上)
+    # 始终使用最新的姿态结果绘制，保证画面上骨架的连续性
+    if last_pose_results:
+        for r in last_pose_results:
+            if r.keypoints is not None and r.keypoints.data is not None and len(r.keypoints.data) > 0:
+                # 获取关键点数据 (1, 17, 3) -> (x, y, conf)
+                kpts = r.keypoints.data[0].cpu().numpy()
+                
+                # 定义骨架连接关系 (索引) - 仅绘制上半身和面部
+                # 0:鼻子, 1:左眼, 2:右眼, 3:左耳, 4:右耳
+                # 5:左肩, 6:右肩, 7:左肘, 8:右肘, 9:左腕, 10:右腕
+                skeleton = [
+                    (5, 7), (7, 9),       # 左臂
+                    (6, 8), (8, 10),      # 右臂
+                    (5, 6),               # 肩膀连接
+                    # (5, 11), (6, 12),     # 躯干连接，可能被遮挡导致视觉效果不佳
+                    (0, 1), (0, 2), (1, 3), (2, 4), # 鼻子到眼睛/耳朵 (面部)
+                ]
+                
+                # 绘制连接线
+                for p1_idx, p2_idx in skeleton:
+                    # 确保索引在有效范围内
+                    if p1_idx < len(kpts) and p2_idx < len(kpts):
+                        x1, y1, conf1 = kpts[p1_idx]
+                        x2, y2, conf2 = kpts[p2_idx]
+                        # 仅绘制置信度高的连接线
+                        if conf1 > 0.5 and conf2 > 0.5: 
+                            # 坐姿不正时，肩膀线变红，其他保持绿色
+                            if (p1_idx == 5 and p2_idx == 6) or (p1_idx == 6 and p2_idx == 5):
+                                color = (0, 0, 255) if is_posture_bad else (0, 255, 0)
+                            else:
+                                color = (0, 255, 0) # 其他连接线绿色
+                            cv2.line(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+                
+                # 绘制关键点
+                for i, (x, y, conf) in enumerate(kpts):
+                    # 仅绘制置信度高的关键点
+                    if conf > 0.5:
+                        # 头部关键点用红色，身体用蓝色 (这里只是上半身)
+                        color = (0, 0, 255) if i <= 4 else (255, 0, 0) # 0-4 是头部关键点
+                        cv2.circle(annotated_frame, (int(x), int(y)), 3, color, -1)
+
+    # --- 数据记录 (每秒) ---
 
     # --- 检测是否有人 ---
     is_person_present = False
