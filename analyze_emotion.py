@@ -5,10 +5,10 @@ import datetime
 # 数据库文件路径
 DB_FILE = 'emotion_monitor.db'
 
-# 定义英文表情到中文的映射
+# 表情映射（HardlyHumans 的 8 类标签）
 emotion_map_zh = {
     'anger': '愤怒',
-    'content': '满足',
+    'contempt': '轻蔑/不屑',
     'disgust': '厌恶',
     'fear': '恐惧',
     'happy': '开心/微笑',

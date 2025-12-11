@@ -36,7 +36,7 @@ conn = None
 cursor = None
 
 # 姿态 & 情绪 & 久坐监控阈值
-POSTURE_ANGLE_THRESHOLD = 25.0        # 肩膀倾斜阈值 (度)
+POSTURE_ANGLE_THRESHOLD = 12.0        # 肩膀倾斜阈值 (度)
 ABNORMAL_DURATION_THRESHOLD = 3.0     # 异常持续时间阈值 (秒)
 ALERT_COOLDOWN = 30.0                 # 报警冷却时间 (秒)
 LONG_SITTING_THRESHOLD = 3600.0       # 久坐阈值 (秒，1小时)
@@ -44,7 +44,7 @@ ABSENCE_RESET_THRESHOLD = 30.0        # 离座重置阈值 (秒，30秒无人视
 
 # 表情识别相关配置
 EMOTION_CONF_THRESHOLD = 0.6          # 表情分类置信度阈值
-EMOTION_SMOOTH_WINDOW = 15            # 表情平滑窗口（帧数）
+EMOTION_SMOOTH_WINDOW = 5            # 表情平滑窗口（帧数）
 emotion_window = deque(maxlen=EMOTION_SMOOTH_WINDOW)
 
 # ----------------- 数据库相关 -----------------
@@ -265,17 +265,6 @@ while True:
                 if emo_conf >= EMOTION_CONF_THRESHOLD:
                     emotion_window.append(emo_en)
 
-                emo_zh = emotion_map_zh.get(emo_en, emo_en)
-
-                # 画框和文字
-                # 画框
-                color = (0, 140, 255)
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-
-                # 显示中文标签
-                label_text = f"{emo_zh} {emo_conf:.2f}"
-                annotated_frame = draw_chinese_text(annotated_frame, label_text, (x1 + 5, y1 - 28), font_size=22, color=(255, 255, 255))
-
                 # 表情时间平滑
                 if len(emotion_window) > 0:
                   most_common, _ = Counter(emotion_window).most_common(1)[0]
@@ -283,6 +272,17 @@ while True:
                   smoothed_emotion_conf = (
                     current_raw_conf if current_raw_emotion == smoothed_emotion else EMOTION_CONF_THRESHOLD
                 )
+
+                emo_zh = emotion_map_zh.get(smoothed_emotion, smoothed_emotion)
+
+                # 画框和文字
+                # 画框
+                color = (0, 140, 255)
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+
+                # 显示中文标签 (使用平滑后的结果)
+                label_text = f"{emo_zh} {smoothed_emotion_conf:.2f}"
+                annotated_frame = draw_chinese_text(annotated_frame, label_text, (x1 + 5, y1 - 28), font_size=22, color=(255, 255, 255))
 
     if results_pose:
         for r in results_pose:
@@ -297,6 +297,8 @@ while True:
                     shoulder_angle = calculate_angle(p1, p2)
                     if shoulder_angle > POSTURE_ANGLE_THRESHOLD:
                         is_posture_bad = True
+                    else:
+                        is_posture_bad = False
 
                     # 肩膀连线（颜色根据姿态）
                     color = (0, 0, 255) if is_posture_bad else (0, 255, 0)
