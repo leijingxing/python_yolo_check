@@ -209,7 +209,8 @@ while True:
     
     if last_pose_results:
         for r in last_pose_results:
-            if r.keypoints is not None and r.keypoints.data is not None:
+            # 增加空值和长度检查，防止 IndexError
+            if r.keypoints is not None and r.keypoints.data is not None and len(r.keypoints.data) > 0:
                 kpts = r.keypoints.data[0].cpu().numpy() # (17, 3)
                 
                 # 提取左右肩膀关键点 (索引 5 和 6)
@@ -236,6 +237,9 @@ while True:
                         # 显示角度数值
                         cv2.putText(annotated_frame, f"Angle: {shoulder_angle:.1f}", (int(p1[0]), int(p1[1])-10), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            else:
+                # 未检测到有效关键点，跳过
+                pass
 
     # 坐姿报警逻辑
     if is_posture_bad:
