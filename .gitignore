@@ -1,2 +1,3 @@
 # Ignore SQLite database files
 *.db
+__pycache__/main.cpython-313.pyc.2132852827408

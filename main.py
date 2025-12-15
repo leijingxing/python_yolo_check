@@ -5,7 +5,6 @@ import sqlite3
 import time
 import winsound
 
-from PIL import Image
 from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
@@ -221,13 +220,18 @@ while True:
     annotated_frame = frame.copy()
 
     # ---------- 交替推理：一帧做人脸，一帧做姿态 ----------
+    # 注意：绘制/情绪识别可以用缓存结果，但“是否有人在/离座重置”只能用本帧新推理
+    fresh_face_results = None
+    fresh_pose_results = None
     if frame_count % 2 != 0:
         results_face = face_detector(frame, verbose=False)
         last_face_results = results_face
+        fresh_face_results = results_face
         results_pose = last_pose_results
     else:
         results_pose = model_pose(frame, verbose=False)
         last_pose_results = results_pose
+        fresh_pose_results = results_pose
         results_face = last_face_results
 
     # ---------- 1. 表情检测（YOLO 框 + HardlyHumans 分类 + 平滑） ----------
@@ -286,27 +290,28 @@ while True:
 
     if results_pose:
         for r in results_pose:
-            if r.keypoints is not None and r.keypoints.data is not None and len(r.keypoints.data) > 0:
-                kpts = r.keypoints.data[0].cpu().numpy()
-                if len(kpts) > 6:
-                    l_shoulder = kpts[5]
-                    r_shoulder = kpts[6]
-                if l_shoulder[2] > 0.5 and r_shoulder[2] > 0.5:
-                    p1 = (l_shoulder[0], l_shoulder[1])
-                    p2 = (r_shoulder[0], r_shoulder[1])
-                    shoulder_angle = calculate_angle(p1, p2)
-                    if shoulder_angle > POSTURE_ANGLE_THRESHOLD:
-                        is_posture_bad = True
-                    else:
-                        is_posture_bad = False
+            if r.keypoints is None or r.keypoints.data is None or len(r.keypoints.data) == 0:
+                continue
 
-                    # 肩膀连线（颜色根据姿态）
-                    color = (0, 0, 255) if is_posture_bad else (0, 255, 0)
-                    cv2.line(annotated_frame, (int(p1[0]), int(p1[1])),
-                             (int(p2[0]), int(p2[1])), color, 3)
-                    cv2.putText(annotated_frame, f"Angle: {shoulder_angle:.1f}",
-                                (int(p1[0]), int(p1[1]) - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            kpts = r.keypoints.data[0].cpu().numpy()
+            if len(kpts) <= 6:
+                continue
+
+            l_shoulder = kpts[5]
+            r_shoulder = kpts[6]
+            if l_shoulder[2] > 0.5 and r_shoulder[2] > 0.5:
+                p1 = (l_shoulder[0], l_shoulder[1])
+                p2 = (r_shoulder[0], r_shoulder[1])
+                shoulder_angle = calculate_angle(p1, p2)
+                is_posture_bad = shoulder_angle > POSTURE_ANGLE_THRESHOLD
+
+                # 肩膀连线（颜色根据姿态）
+                color = (0, 0, 255) if is_posture_bad else (0, 255, 0)
+                cv2.line(annotated_frame, (int(p1[0]), int(p1[1])),
+                         (int(p2[0]), int(p2[1])), color, 3)
+                cv2.putText(annotated_frame, f"Angle: {shoulder_angle:.1f}",
+                            (int(p1[0]), int(p1[1]) - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
             # 简单骨架连线（上半身 + 头部）
             skeleton = [
@@ -346,22 +351,30 @@ while True:
         posture_start_time = None
 
     # ---------- 3. 是否有人在 & 久坐逻辑 ----------
-    is_person_present = False
+    # 只用本帧新推理的结果判断是否在座位，避免缓存导致“人走了还算在”
+    def has_face(res_list):
+        if not res_list:
+            return False
+        for rr in res_list:
+            if hasattr(rr, "boxes") and rr.boxes is not None and len(rr.boxes) > 0:
+                return True
+        return False
 
-    # 人脸检测结果
-    if results_face:
-        for r in results_face:
-            if hasattr(r, 'boxes') and len(r.boxes) > 0:
-                is_person_present = True
-                break
+    def has_pose(res_list):
+        if not res_list:
+            return False
+        for rr in res_list:
+            if rr.keypoints is not None and rr.keypoints.data is not None and len(rr.keypoints.data) > 0:
+                conf = getattr(rr.keypoints, 'conf', None)
+                if conf is None:
+                    return True
+                if conf.sum() > 1.0:
+                    return True
+        return False
 
-    # 姿态检测结果
-    if not is_person_present and results_pose:
-        for r in results_pose:
-            if r.keypoints is not None and len(r.keypoints.data) > 0:
-                if getattr(r.keypoints, 'conf', None) is not None and r.keypoints.conf.sum() > 1.0:
-                    is_person_present = True
-                    break
+    face_present = has_face(fresh_face_results)
+    pose_present = has_pose(fresh_pose_results)
+    is_person_present = face_present or pose_present
 
     if is_person_present:
         last_person_seen_time = current_time
