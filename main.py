@@ -1,4 +1,5 @@
 from collections import Counter, deque
+import argparse
 import math
 import os
 import sqlite3
@@ -9,9 +10,6 @@ from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
 from plyer import notification
-import torch
-from transformers import AutoImageProcessor, AutoModelForImageClassification
-from ultralytics import YOLO
 
 
 # ----------------- 配置区 -----------------
@@ -45,6 +43,98 @@ ABSENCE_RESET_THRESHOLD = 30.0        # 离座重置阈值 (秒，30秒无人视
 EMOTION_CONF_THRESHOLD = 0.6          # 表情分类置信度阈值
 EMOTION_SMOOTH_WINDOW = 5            # 表情平滑窗口（帧数）
 emotion_window = deque(maxlen=EMOTION_SMOOTH_WINDOW)
+
+# ----------------- 摄像头选择（新增） -----------------
+def list_cameras(max_index=10, backend=cv2.CAP_DSHOW):
+    """
+    扫描可用摄像头索引
+    max_index: 扫描 0~max_index-1
+    backend: Windows 推荐 cv2.CAP_DSHOW
+    """
+    available = []
+    for i in range(max_index):
+        cap = cv2.VideoCapture(i, backend)
+        if cap.isOpened():
+            ret, _ = cap.read()
+            if ret:
+                available.append(i)
+        cap.release()
+    return available
+
+def choose_camera(max_index=10, backend=cv2.CAP_DSHOW):
+    """
+    选择摄像头：
+    - 0 个：返回 None
+    - 1 个：自动用
+    - 多个：命令行选择
+    """
+    cams = list_cameras(max_index=max_index, backend=backend)
+
+    if not cams:
+        print("未检测到任何可用摄像头。")
+        return None
+
+    if len(cams) == 1:
+        print(f"仅检测到一个摄像头：索引 {cams[0]}，自动使用。")
+        return cv2.VideoCapture(cams[0], backend)
+
+    print("\n检测到多个摄像头：")
+    for idx, cam_id in enumerate(cams):
+        print(f"  [{idx}] 摄像头索引 {cam_id}")
+
+    while True:
+        choice = input(f"请选择摄像头序号 (0~{len(cams)-1})，直接回车默认 0：").strip()
+        if choice == "":
+            chosen = cams[0]
+            break
+        if choice.isdigit() and 0 <= int(choice) < len(cams):
+            chosen = cams[int(choice)]
+            break
+        print("输入无效，请重新输入。")
+
+    print(f"已选择摄像头索引: {chosen}")
+    return cv2.VideoCapture(chosen, backend)
+
+
+# ----------------- 命令行参数（新增） -----------------
+def parse_args():
+    parser = argparse.ArgumentParser(description="AI 情绪&姿态监控")
+    parser.add_argument(
+        "--camera",
+        type=int,
+        default=None,
+        help="指定摄像头索引（例如 0/1）。不指定则启动时提示选择。",
+    )
+    parser.add_argument(
+        "--list-cameras",
+        action="store_true",
+        help="列出可用摄像头索引后退出（不会加载模型）。",
+    )
+    parser.add_argument(
+        "--scan-max",
+        type=int,
+        default=10,
+        help="扫描摄像头索引上限（扫描 0~scan-max-1）。默认 10。",
+    )
+    return parser.parse_args()
+
+
+args = parse_args()
+
+if args.list_cameras:
+    cams = list_cameras(max_index=args.scan_max, backend=cv2.CAP_DSHOW)
+    if not cams:
+        print("未检测到任何可用摄像头。")
+    else:
+        print("可用摄像头索引：", ", ".join(map(str, cams)))
+    raise SystemExit(0)
+
+
+# 说明：延迟导入这些库，避免在 `--help/--list-cameras` 场景触发模型/配置写入。
+import torch
+from transformers import AutoImageProcessor, AutoModelForImageClassification
+from ultralytics import YOLO
+
 
 # ----------------- 数据库相关 -----------------
 
@@ -187,9 +277,28 @@ last_sitting_alert_time = 0        # 上次久坐提醒时间
 smoothed_emotion = "neutral"
 smoothed_emotion_conf = 0.0
 
-# 摄像头
-cap = cv2.VideoCapture(0)
-if not cap.isOpened():
+# 摄像头（这里改成：检测多摄像头并选择）
+if args.camera is not None:
+    cap = cv2.VideoCapture(args.camera, cv2.CAP_DSHOW)
+    ok = cap.isOpened()
+    if ok:
+        ret, _ = cap.read()
+        ok = bool(ret)
+    if not ok:
+        try:
+            cap.release()
+        except Exception:
+            pass
+        cams = list_cameras(max_index=args.scan_max, backend=cv2.CAP_DSHOW)
+        if cams:
+            print(f"无法打开摄像头索引 {args.camera}。可用索引：{', '.join(map(str, cams))}")
+        else:
+            print(f"无法打开摄像头索引 {args.camera}，且未检测到任何可用摄像头。")
+        close_db()
+        raise SystemExit(2)
+else:
+    cap = choose_camera(max_index=args.scan_max, backend=cv2.CAP_DSHOW)
+if cap is None or not cap.isOpened():
     print("无法打开摄像头")
     close_db()
     exit()
